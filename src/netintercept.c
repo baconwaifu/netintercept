@@ -1104,18 +1104,54 @@ PRInt32 PR_Write(PRFileDesc *fd,const void *buf,PRInt32 amount) {
 /* 
  * Unfortunately GNUTLS is "too flexible" to trivially extract FDs from, so the existing stream architecture
  * requires some assumptions to be made, and one of those is to assume it's using the default send/recv transport.
+ * If it's not, we create just enough of a fake AF_INET/IPPROTO_TCP structure to trick the exporter into actually
+ * creating packets, and use the lower 20 bits of the session pointer as the 'fd' of the stream.
  */
  
-// Nasty hack that should get the FD out of the TLS session if it's using the default transport
+// Nasty hack that should get the FD out of the TLS session if it's using the default transport.
 static int gnutls_get_sockfd(gnutls_session_t session) {
+	fprintf(stderr, "lock_counter: %li\n", lock_counter);
 	NETINTERCEPT_SETUP_HOOK(gnutls_transport_get_ptr, "gnutls_transport_get_ptr");
-	void* raw = ctx.gnutls_transport_get_ptr(session);
+	void* _raw = ctx.gnutls_transport_get_ptr(session);
+	uintptr_t raw = (uintptr_t)_raw;
 	// does this look like a file descriptor? Most pointers shouldn't fall in the first megabyte.
-	if ((int)raw > 1048576 || (int)raw =< 0){
-	  fprintf(stderr, "netintercept gnutls error: could not get file descriptor from TLS session; hooks won't record anything");
-	  return -1;
+	if (raw > 1048576 || raw > INT_MAX){
+	  fprintf(stderr, "netintercept gnutls error: could not get file descriptor from TLS session, making one up: %i (this may not work!)\n", (int)(raw & 0xffffff));
+	  return (int)(raw & 0xffffff);
 	}
 	return (int)raw;
+}
+
+// Because we may not get the "real" fd out of the stream easily, we can't rely on the normal init
+// to leave it in a sane state. So we have to cheese it and fake some stuff.
+static struct stream* gnutls_get_stream(gnutls_session_t session) {
+	int fd = gnutls_get_sockfd(session);
+	struct stream *stream = netintercept_get_stream(fd, NULL, 0);
+	if (stream->protocol == 0){
+		stream->family = AF_INET;
+		stream->protocol = IPPROTO_TCP;
+		stream->local.ip4.version = 4;
+		stream->local.ip4.ihl = 5;
+		stream->local.ip4.ttl = 64;
+		stream->local.ip4.protocol = stream->protocol;
+		stream->local.ip4.tot_len = htons(sizeof(stream->local.ip4));
+		stream->local.tcp.source = 50000;
+		stream->local.tcp.dest = 443;
+		stream->local.tcp.doff = 5;
+		stream->local.tcp.window = 2;
+		stream->remote.ip4.version = 4;
+		stream->remote.ip4.ihl = 5;
+		stream->remote.ip4.ttl = 64;
+		stream->remote.ip4.protocol = stream->protocol;
+		stream->remote.ip4.tot_len = htons(sizeof(stream->remote.ip4));
+		stream->remote.tcp.source = 443;
+		stream->remote.tcp.dest = 50000;
+		stream->remote.tcp.doff = 5;
+		stream->remote.tcp.window = 2;
+		stream->remote.ip4.tot_len = htons(ntohs(stream->remote.ip4.tot_len) + sizeof(stream->remote.tcp));
+		stream->local.ip4.tot_len = htons(ntohs(stream->local.ip4.tot_len) + sizeof(stream->local.tcp));
+	}
+	return stream;
 }
 
 ssize_t gnutls_record_send(gnutls_session_t session, const void *data, size_t data_size) {
@@ -1125,8 +1161,8 @@ ssize_t gnutls_record_send(gnutls_session_t session, const void *data, size_t da
 	
 	int sockfd = gnutls_get_sockfd(session);
 	struct stream *stream = NULL;
-	if(lock_counter == 1 && sockfd > 0) {
-		stream = netintercept_get_stream(sockfd, NULL, 0);
+	if(lock_counter == 1) {
+		stream = gnutls_get_stream(session);
 		if(!stream) {
 			fprintf(stderr, "%s error: could not get stream for file descriptor %d\n", __func__, sockfd);
 			abort();
@@ -1138,8 +1174,8 @@ ssize_t gnutls_record_send(gnutls_session_t session, const void *data, size_t da
 	ssize_t ret = ctx.gnutls_record_send(session, data, data_size);
 	orig_errno = errno;
 	
-	if(lock_counter == 1 && sockfd > 0) {
-		if(S_ISSOCK(stream->mode) && ret > 0) {
+	if(lock_counter == 1) {
+		if(ret > 0) {
 			stream_write(stream, data, ret, netintercept_dump);
 		}
 		stream_unlock(stream);
@@ -1157,8 +1193,8 @@ ssize_t gnutls_record_send2(gnutls_session_t session, const void *data, size_t d
 	
 	int sockfd = gnutls_get_sockfd(session);
 	struct stream *stream = NULL;
-	if(lock_counter == 1 && sockfd > 0) {
-		stream = netintercept_get_stream(sockfd, NULL, 0);
+	if(lock_counter == 1) {
+		stream = gnutls_get_stream(session);
 		if(!stream) {
 			fprintf(stderr, "%s error: could not get stream for file descriptor %d\n", __func__, sockfd);
 			abort();
@@ -1170,8 +1206,8 @@ ssize_t gnutls_record_send2(gnutls_session_t session, const void *data, size_t d
 	ssize_t ret = ctx.gnutls_record_send2(session, data, data_size, pad, flags);
 	orig_errno = errno;
 	
-	if(lock_counter == 1 && sockfd > 0) {
-		if(S_ISSOCK(stream->mode) && ret > 0) {
+	if(lock_counter == 1) {
+		if(ret > 0) {
 			stream_write(stream, data, ret, netintercept_dump);
 		}
 		stream_unlock(stream);
@@ -1189,8 +1225,8 @@ ssize_t gnutls_record_send_range(gnutls_session_t session, const void *data, siz
 	
 	int sockfd = gnutls_get_sockfd(session);
 	struct stream *stream = NULL;
-	if(lock_counter == 1 && sockfd > 0) {
-		stream = netintercept_get_stream(sockfd, NULL, 0);
+	if(lock_counter == 1) {
+		stream = gnutls_get_stream(session);
 		if(!stream) {
 			fprintf(stderr, "%s error: could not get stream for file descriptor %d\n", __func__, sockfd);
 			abort();
@@ -1202,8 +1238,8 @@ ssize_t gnutls_record_send_range(gnutls_session_t session, const void *data, siz
 	ssize_t ret = ctx.gnutls_record_send_range(session, data, data_size, range);
 	orig_errno = errno;
 	
-	if(lock_counter == 1 && sockfd > 0) {
-		if(S_ISSOCK(stream->mode) && ret > 0) {
+	if(lock_counter == 1) {
+		if(ret > 0) {
 			stream_write(stream, data, ret, netintercept_dump);
 		}
 		stream_unlock(stream);
@@ -1221,8 +1257,8 @@ ssize_t gnutls_record_recv(gnutls_session_t session, void *data, size_t data_siz
 	
 	int sockfd = gnutls_get_sockfd(session);
 	struct stream *stream = NULL;
-	if(lock_counter == 1 && sockfd > 0) {
-		stream = netintercept_get_stream(sockfd, NULL, 0);
+	if(lock_counter == 1) {
+		stream = gnutls_get_stream(session);
 		if(!stream) {
 			fprintf(stderr, "%s error: could not get stream for file descriptor %d\n", __func__, sockfd);
 			abort();
@@ -1234,8 +1270,8 @@ ssize_t gnutls_record_recv(gnutls_session_t session, void *data, size_t data_siz
 	ssize_t ret = ctx.gnutls_record_recv(session, data, data_size);
 	orig_errno = errno;
 	
-	if(lock_counter == 1 && sockfd > 0) {
-		if(S_ISSOCK(stream->mode) && ret > 0) {
+	if(lock_counter == 1) {
+		if(ret > 0) {
 			stream_read(stream, data, ret, netintercept_dump);
 		}
 		stream_unlock(stream);
@@ -1253,8 +1289,8 @@ ssize_t gnutls_record_recv_seq(gnutls_session_t session, void *data, size_t data
 	
 	int sockfd = gnutls_get_sockfd(session);
 	struct stream *stream = NULL;
-	if(lock_counter == 1 && sockfd > 0) {
-		stream = netintercept_get_stream(sockfd, NULL, 0);
+	if(lock_counter == 1) {
+		stream = gnutls_get_stream(session);
 		if(!stream) {
 			fprintf(stderr, "%s error: could not get stream for file descriptor %d\n", __func__, sockfd);
 			abort();
@@ -1266,8 +1302,8 @@ ssize_t gnutls_record_recv_seq(gnutls_session_t session, void *data, size_t data
 	ssize_t ret = ctx.gnutls_record_recv_seq(session, data, data_size, seq);
 	orig_errno = errno;
 	
-	if(lock_counter == 1 && sockfd > 0) {
-		if(S_ISSOCK(stream->mode) && ret > 0) {
+	if(lock_counter == 1) {
+		if(ret > 0) {
 			stream_read(stream, data, ret, netintercept_dump);
 		}
 		stream_unlock(stream);
@@ -1286,7 +1322,7 @@ ssize_t gnutls_record_recv_packet(gnutls_session_t session, gnutls_packet_t *pac
 	
 	int sockfd = gnutls_get_sockfd(session);
 	struct stream *stream = NULL;
-	if(lock_counter == 1 && sockfd > 0) {
+	if(lock_counter == 1) {
 		stream = netintercept_get_stream(sockfd, NULL, 0);
 		if(!stream) {
 			fprintf(stderr, "%s error: could not get stream for file descriptor %d\n", __func__, sockfd);
@@ -1299,10 +1335,10 @@ ssize_t gnutls_record_recv_packet(gnutls_session_t session, gnutls_packet_t *pac
 	ssize_t ret = ctx.gnutls_record_recv_packet(session, packet);
 	orig_errno = errno;
 	
-	if(lock_counter == 1 && sockfd > 0) {
-		if(S_ISSOCK(stream->mode) && ret > 0) {
+	if(lock_counter == 1) {
+		if(ret > 0) {
 			gnutls_datum_t data;
-			ctx.gnutls_packet_get(packet, &data, NULL);
+			ctx.gnutls_packet_get(*packet, &data, NULL);
 			stream_read(stream, data.data, data.size, netintercept_dump);
 		}
 		stream_unlock(stream);
