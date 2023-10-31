@@ -11,6 +11,8 @@ option(NETINTERCEPT_OPENSSL "Enable support for OpenSSL" ON)
 add_feature_info(OpenSSL NETINTERCEPT_OPENSSL "netintercept has OpenSSL support enabled.")
 option(NETINTERCEPT_NSPR "Enable support for NSPR" ON)
 add_feature_info(NSPR NETINTERCEPT_NSPR "netintercept has NSPR support enabled.")
+option(NETINTERCEPT_GNUTLS "Enable support for GNUTLS" ON)
+add_feature_info(GnuTLS NETINTERCEPT_GNUTLS "netintercept has GnuTLS support enabled.")
 
 find_package(Threads REQUIRED)
 find_package(PCAP REQUIRED)
@@ -28,6 +30,11 @@ endif()
 if(${NETINTERCEPT_NSPR})
 	find_package(NSPR REQUIRED)
 	include_directories(${NSPR_INCLUDE_DIRS})
+endif()
+
+if(${NETINTERCEPT_GNUTLS})
+	find_package(GnuTLS REQUIRED)
+	include_directories(${GNUTLS_INCLUDE_DIRS})
 endif()
 
 configure_file(

@@ -47,6 +47,23 @@ typedef PRInt32 PR_Write_t(PRFileDesc *fd,const void *buf,PRInt32 amount);
 typedef PRInt32 PR_Writev_t(PRFileDesc *fd, const PRIOVec *iov, PRInt32 iov_size, PRIntervalTime timeout);
 #endif // NSPR_FOUND
 
+#if GNUTLS_FOUND
+
+#include <gnutls/gnutls.h>
+
+// Hooks
+typedef ssize_t gnutls_record_send_t(gnutls_session_t session, const void *data, size_t data_size);
+typedef ssize_t gnutls_record_send2_t(gnutls_session_t session, const void *data, size_t data_size, size_t pad, unsigned flags);
+typedef ssize_t gnutls_record_send_range_t(gnutls_session_t session, const void *data, size_t data_size, const gnutls_range_st *range);
+typedef ssize_t gnutls_record_recv_t(gnutls_session_t session, void *data, size_t data_size);
+typedef ssize_t gnutls_record_recv_seq_t(gnutls_session_t session, void *data, size_t data_size, unsigned char *seq);
+typedef ssize_t gnutls_record_recv_packet_t(gnutls_session_t session, gnutls_packet_t *packet);
+// gnutls_record_send_file can be reduced to read() and record_send() without needing to call the original.
+// Utility functions
+typedef void gnutls_packet_get_t(gnutls_packet_t packet, gnutls_datum_t* data, unsigned char* sequence);
+typedef void* gnutls_transport_get_ptr_t(gnutls_session_t session);
+#endif // GNUTLS_FOUND
+
 /* <NSS> */
 /*
 typedef struct {
@@ -109,6 +126,17 @@ struct netintercept_context {
 	PR_Read_t *pr_read;
 	PR_Write_t *pr_write;
 #endif // NSPR_FOUND
+
+#if GNUTLS_FOUND
+	gnutls_record_send_t *gnutls_record_send;
+	gnutls_record_send2_t *gnutls_record_send2;
+	gnutls_record_send_range_t *gnutls_record_send_range;
+	gnutls_record_recv_t *gnutls_record_recv;
+	gnutls_record_recv_seq_t *gnutls_record_recv_seq;
+	gnutls_record_recv_packet_t *gnutls_record_recv_packet;
+	gnutls_packet_get_t *gnutls_packet_get;
+	gnutls_transport_get_ptr_t *gnutls_transport_get_ptr;
+#endif // GNUTLS_FOUND
 
 /*
 	ssl_DefSend_t *ssl_defsend;
